@@ -18,6 +18,7 @@ conda activate reno
 conda install pytorch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 pytorch-cuda=11.8 -c pytorch -c nvidia
 
 # Install torchsparse
+# You may need to ensure that the CUDA version displayed by nvcc -V matches the CUDA version in the environment
 apt-get install libsparsehash-dev
 git clone https://github.com/mit-han-lab/torchsparse.git && cd torchsparse
 python setup.py install
@@ -121,4 +122,14 @@ python train.py \
 
 ## 🌊 Citation
 
-TODO
+If you find this work useful, we would appreciate a citation:
+
+```
+@inproceedings{you2025reno,
+  title={Reno: Real-time neural compression for 3d lidar point clouds},
+  author={You, Kang and Chen, Tong and Ding, Dandan and Asif, M Salman and Ma, Zhan},
+  booktitle={Proceedings of the Computer Vision and Pattern Recognition Conference},
+  pages={22172--22181},
+  year={2025}
+}
+```
