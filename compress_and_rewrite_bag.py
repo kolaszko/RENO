@@ -14,9 +14,9 @@ import json
 import numpy as np
 from pathlib import Path
 import torch
-import torchac
 from torchsparse import SparseTensor
 from torchsparse.nn import functional as F
+import torchac
 
 try:
     from rosbags.highlevel import AnyReader
@@ -76,15 +76,15 @@ class PointCloudCompressor:
                 feats=torch.ones((2048, 1))
             ).to(self.device))
     
-    def compress_and_decompress(self, xyz):
+    def compress(self, xyz):
         """
-        Compress a point cloud and return the decompressed result.
+        Compress a point cloud and return compressed data.
         
         Args:
             xyz (np.ndarray): Point cloud coordinates of shape (N, 3)
             
         Returns:
-            np.ndarray: Decompressed point cloud of shape (M, 3)
+            tuple: (byte_stream_ls, base_x_coords, base_x_feats)
         """
         with torch.no_grad():
             # Preprocess coordinates
@@ -152,6 +152,21 @@ class PointCloudCompressor:
             base_x_coords = base_x_coords[:, 1:].cpu().numpy()
             base_x_feats = base_x_feats.cpu().numpy().astype(np.uint8)
             
+            return byte_stream_ls, base_x_coords, base_x_feats
+    
+    def decompress(self, byte_stream_ls, base_x_coords, base_x_feats):
+        """
+        Decompress a point cloud from compressed data.
+        
+        Args:
+            byte_stream_ls (list): List of compressed byte streams
+            base_x_coords (np.ndarray): Base coordinates
+            base_x_feats (np.ndarray): Base features
+            
+        Returns:
+            np.ndarray: Decompressed point cloud of shape (M, 3)
+        """
+        with torch.no_grad():
             # Decompression phase
             base_x_coords_t = torch.tensor(base_x_coords, device=self.device)
             base_x_feats_t = torch.tensor(base_x_feats.reshape(-1, 1), device=self.device)
@@ -198,6 +213,19 @@ class PointCloudCompressor:
             scan = self.net.fcg(x_dec.coords, x_dec.feats)
             scan = (scan[:, 1:] * self.posQ - 131072) * 0.001
             return scan.float().cpu().numpy()
+    
+    def compress_and_decompress(self, xyz):
+        """
+        Compress a point cloud and return the decompressed result.
+        
+        Args:
+            xyz (np.ndarray): Point cloud coordinates of shape (N, 3)
+            
+        Returns:
+            np.ndarray: Decompressed point cloud of shape (M, 3)
+        """
+        byte_stream_ls, base_x_coords, base_x_feats = self.compress(xyz)
+        return self.decompress(byte_stream_ls, base_x_coords, base_x_feats)
 
 
 def extract_points_from_pointcloud2(msg):
@@ -328,9 +356,16 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
             print("Available topics in input bag:")
             topic_info = {}
             connection_map = {}  # Map topic to connection
-            skipped_topics = set()  # Track topics with unknown types
+            skipped_topics = set()  # Track topics with unknown types or Image types
             
             for connection in reader.connections:
+                # Skip Image topics
+                if 'Image' in connection.msgtype and 'sensor_msgs' in connection.msgtype:
+                    if connection.topic not in skipped_topics:
+                        skipped_topics.add(connection.topic)
+                        print(f"  Skipping topic '{connection.topic}': Type '{connection.msgtype}' (Image topics are excluded)")
+                    continue
+                
                 # Check if the message type is known
                 try:
                     # Try to get the type definition to verify it exists
@@ -404,6 +439,7 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                 processed_count = 0
                 compressed_count = 0
                 compression_times = []  # Track compression times
+                decompression_times = []  # Track decompression times
                 original_point_counts = []  # Track original point counts
                 compressed_point_counts = []  # Track compressed point counts
                 per_message_stats = []  # Track per-message statistics
@@ -433,15 +469,23 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                             # Extract points
                             xyz = extract_points_from_pointcloud2(msg)
                             original_points = xyz.shape[0]
-                            print(f"Compressing {connection.topic} (msg {compressed_count + 1}): {original_points} points...", end=' ')
+                            print(f"Processing {connection.topic} (msg {compressed_count + 1}): {original_points} points")
                             
-                            # Compress and decompress with timing
-                            start_time = time.time()
-                            compressed_xyz = compressor.compress_and_decompress(xyz)
-                            compression_time = time.time() - start_time
+                            # Compress with timing
+                            compress_start = time.time()
+                            byte_stream_ls, base_x_coords, base_x_feats = compressor.compress(xyz)
+                            compress_time = time.time() - compress_start
+                            print(f"  Compression: {compress_time:.4f}s", end=' ')
+                            
+                            # Decompress with timing
+                            decompress_start = time.time()
+                            compressed_xyz = compressor.decompress(byte_stream_ls, base_x_coords, base_x_feats)
+                            decompress_time = time.time() - decompress_start
                             compressed_points = compressed_xyz.shape[0]
+                            print(f"| Decompression: {decompress_time:.4f}s → {compressed_points} points")
                             
-                            compression_times.append(compression_time)
+                            compression_times.append(compress_time)
+                            decompression_times.append(decompress_time)
                             original_point_counts.append(original_points)
                             compressed_point_counts.append(compressed_points)
                             
@@ -453,10 +497,10 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                                 'original_points': original_points,
                                 'compressed_points': compressed_points,
                                 'compression_ratio': original_points / compressed_points if compressed_points > 0 else 0,
-                                'compression_time': compression_time
+                                'compression_time': compress_time,
+                                'decompression_time': decompress_time,
+                                'total_time': compress_time + decompress_time
                             })
-                            
-                            print(f"→ {compressed_points} points ({compression_time:.4f}s)")
                             
                             # Create new message with compressed points
                             new_msg = create_pointcloud2_message(compressed_xyz, msg)
@@ -506,9 +550,23 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
             }
             
             if compression_times:
-                mean_time = np.mean(compression_times)
-                std_time = np.std(compression_times)
-                total_time = np.sum(compression_times)
+                # Compression timing statistics
+                compress_total = np.sum(compression_times)
+                compress_mean = np.mean(compression_times)
+                compress_std = np.std(compression_times)
+                compress_min = np.min(compression_times)
+                compress_max = np.max(compression_times)
+                
+                # Decompression timing statistics
+                decompress_total = np.sum(decompression_times)
+                decompress_mean = np.mean(decompression_times)
+                decompress_std = np.std(decompression_times)
+                decompress_min = np.min(decompression_times)
+                decompress_max = np.max(decompression_times)
+                
+                # Combined timing statistics
+                total_time = compress_total + decompress_total
+                combined_mean = compress_mean + decompress_mean
                 
                 # Point count statistics
                 total_original_points = np.sum(original_point_counts)
@@ -516,12 +574,25 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                 mean_original_points = np.mean(original_point_counts)
                 mean_compressed_points = np.mean(compressed_point_counts)
                 
-                print(f"\nCompression/Decompression Timing Statistics:")
-                print(f"  Total time: {total_time:.4f}s")
-                print(f"  Mean time per message: {mean_time:.4f}s")
-                print(f"  Std deviation: {std_time:.4f}s")
-                print(f"  Min time: {np.min(compression_times):.4f}s")
-                print(f"  Max time: {np.max(compression_times):.4f}s")
+                print(f"\nCompression Timing Statistics:")
+                print(f"  Total compression time: {compress_total:.4f}s")
+                print(f"  Mean compression time per message: {compress_mean:.4f}s")
+                print(f"  Std deviation: {compress_std:.4f}s")
+                print(f"  Min compression time: {compress_min:.4f}s")
+                print(f"  Max compression time: {compress_max:.4f}s")
+                
+                print(f"\nDecompression Timing Statistics:")
+                print(f"  Total decompression time: {decompress_total:.4f}s")
+                print(f"  Mean decompression time per message: {decompress_mean:.4f}s")
+                print(f"  Std deviation: {decompress_std:.4f}s")
+                print(f"  Min decompression time: {decompress_min:.4f}s")
+                print(f"  Max decompression time: {decompress_max:.4f}s")
+                
+                print(f"\nCombined Timing Statistics:")
+                print(f"  Total time (compression + decompression): {total_time:.4f}s")
+                print(f"  Mean time per message: {combined_mean:.4f}s")
+                print(f"  Compression percentage: {(compress_total / total_time * 100):.2f}%")
+                print(f"  Decompression percentage: {(decompress_total / total_time * 100):.2f}%")
                 
                 print(f"\nPoint Count Statistics:")
                 print(f"  Total original points: {total_original_points}")
@@ -532,11 +603,26 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                 
                 # Add to statistics dictionary
                 statistics['timing'] = {
-                    'total_time': total_time,
-                    'mean_time': mean_time,
-                    'std_time': std_time,
-                    'min_time': float(np.min(compression_times)),
-                    'max_time': float(np.max(compression_times))
+                    'compression': {
+                        'total_time': compress_total,
+                        'mean_time': compress_mean,
+                        'std_time': compress_std,
+                        'min_time': float(compress_min),
+                        'max_time': float(compress_max)
+                    },
+                    'decompression': {
+                        'total_time': decompress_total,
+                        'mean_time': decompress_mean,
+                        'std_time': decompress_std,
+                        'min_time': float(decompress_min),
+                        'max_time': float(decompress_max)
+                    },
+                    'combined': {
+                        'total_time': total_time,
+                        'mean_time': combined_mean,
+                        'compression_percentage': float(compress_total / total_time * 100),
+                        'decompression_percentage': float(decompress_total / total_time * 100)
+                    }
                 }
                 statistics['point_counts'] = {
                     'total_original_points': int(total_original_points),
@@ -603,7 +689,6 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("input_bag", type=str, help="Path to the input .bag file or directory")
-    parser.add_argument("output_bag", type=str, help="Path to the output .bag file or directory")
     parser.add_argument("--topic", type=str, nargs='+', default=None, 
                         help="Specific topic(s) to compress (space-separated). If not specified, all PointCloud2 topics are compressed.")
     parser.add_argument("--max-messages", type=int, default=None, 

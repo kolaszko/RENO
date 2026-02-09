@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  reno:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: reno-executor:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - BAG_PATH=${BAG_PATH:-/datasets/example.bag}
+      - POSQ=${POSQ:-16}
+      - TOPIC=${TOPIC:-}
+      - MAX_MESSAGES=${MAX_MESSAGES:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../datasets:/datasets
+      - ./results:/app/results
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    command: >
+      bash -c "source /app/env.sh && python compress_and_rewrite_bag.py
+      \$${BAG_PATH}
+      --pos-quantization \$${POSQ}
+      $${TOPIC:+--topic \$${TOPIC}}
+      $${MAX_MESSAGES:+--max-messages \$${MAX_MESSAGES}}"
