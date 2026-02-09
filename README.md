@@ -3,6 +3,43 @@
 [![arXiv](https://img.shields.io/badge/Arxiv-2503.12382-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2503.12382)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](https://choosealicense.com/licenses/mit/)
 
+## 🧩 Local additions
+
+- **ROS bag compression pipeline** via [compress_and_rewrite_bag.py](compress_and_rewrite_bag.py), supporting ROS1 and ROS2 bags. Output is written next to the input bag in a `reno/<bag_name>_posq<POSQ>/` folder, along with `statistics.json`.
+- **Docker execution** for GPU-enabled, reproducible runs (see Docker usage below).
+- **Helper scripts**: [single_run.sh](single_run.sh) for one bag and [batch_run.sh](batch_run.sh) for multiple bags.
+
+### 🐳 Docker usage (ROS bag compression)
+
+**Prerequisites:** NVIDIA GPU + NVIDIA Container Toolkit.
+
+1. Place your bags under `../datasets/` (host). They are mounted to `/datasets` in the container.
+2. Run with environment variables:
+
+```bash
+docker compose up --build \
+    --remove-orphans
+```
+
+```bash
+BAG_PATH=/datasets/example.bag \
+POSQ=16 \
+TOPIC=/velodyne_points \
+MAX_MESSAGES=100 \
+docker compose up --build
+```
+
+**Notes:**
+- `TOPIC` and `MAX_MESSAGES` are optional.
+- Outputs are saved under `/datasets/reno/<bag_name>_posq<POSQ>/` on the host.
+
+You can also use the helpers:
+
+```bash
+./single_run.sh /datasets/example.bag 16 /velodyne_points 100
+./batch_run.sh
+```
+
 ## ✨ Introduction
 This repository is the offical PyTorch implementation of our paper *RENO: Real-Time Neural Compression for 3D LiDAR Point Clouds*.
 
