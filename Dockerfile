@@ -7,12 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates openssl libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN conda config --set ssl_verify false
-RUN conda update -n base -c defaults conda -y || true
-RUN conda config --add channels conda-forge
-RUN conda config --set channel_priority flexible
-RUN /opt/conda/bin/pip install ninja filelock gitpython
-RUN /opt/conda/bin/pip install torchac open3d rosbags
+RUN /opt/conda/bin/pip install ninja==1.13.0 filelock==3.20.1 tox==4.32.0 gitpython
+RUN /opt/conda/bin/pip install torchac==0.9.3 open3d==0.19.0 rosbags==0.11.0
 
 FROM base as executor
 # Set build environment variables for torchsparse
