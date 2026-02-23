@@ -32,6 +32,9 @@ except ImportError as e:
 from network import Network
 import kit.op as op
 
+typestore = get_typestore(Stores.ROS1_NOETIC)
+PointCloud2 = typestore.types['sensor_msgs/msg/PointCloud2']
+    
 
 class PointCloudCompressor:
     """
@@ -287,7 +290,7 @@ def create_pointcloud2_message(xyz, original_msg):
     data_bytes = xyz.reshape(-1).view(np.uint8)
     
     # Create a new message with XYZ fields only
-    new_msg = type(original_msg)(
+    new_msg = PointCloud2(
         header=original_msg.header,
         height=1,  # Unorganized point cloud
         width=num_points,
@@ -339,7 +342,7 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
         topic_filter = [topic_filter]
     
     try:
-        typestore = get_typestore(Stores.LATEST)
+        # typestore = get_typestore(Stores.LATEST)
         
         with AnyReader([input_bag_path], default_typestore=typestore) as reader:
             # Detect bag format
@@ -453,7 +456,7 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                     if max_messages and compressed_count >= max_messages:
                         # Deserialize and re-serialize remaining messages
                         try:
-                            msg = reader.deserialize(rawdata, connection.msgtype)
+                            msg = typestore.deserialize_ros1(rawdata, connection.msgtype)
                             new_rawdata = typestore.serialize_ros1(msg, connection.msgtype)
                             writer.write(connection_id_map[connection.id], timestamp, new_rawdata)
                         except (TypesysError, KeyError) as e:
@@ -464,7 +467,7 @@ def compress_and_rewrite_bag(input_bag_path, output_bag_path, compressor,
                     if connection.topic in pointcloud_topics and 'PointCloud2' in connection.msgtype:
                         try:
                             # Deserialize message
-                            msg = reader.deserialize(rawdata, connection.msgtype)
+                            msg = typestore.deserialize_ros1(rawdata, connection.msgtype)
                             
                             # Extract points
                             xyz = extract_points_from_pointcloud2(msg)
